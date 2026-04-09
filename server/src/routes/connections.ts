@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../middleware/require-auth.js';
+import { checkConnectionLimit } from '../middleware/plan-limits.js';
 import { prisma } from '../prisma.js';
 import { adapterRegistry } from '../services/adapter-registry.js';
 import { encrypt } from '../utils/encryption.js';
@@ -65,7 +66,7 @@ export async function connectionRoutes(app: FastifyInstance) {
   });
 
   // POST /api/connections/:platform/callback — exchange code for tokens
-  app.post('/:platform/callback', async (request, reply) => {
+  app.post('/:platform/callback', { preHandler: checkConnectionLimit }, async (request, reply) => {
     const { platform } = request.params as { platform: string };
     const platformParsed = PlatformId.safeParse(platform.toUpperCase());
 

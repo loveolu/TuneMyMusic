@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../middleware/require-auth.js';
+import { checkTransferLimit, checkTrackLimit } from '../middleware/plan-limits.js';
 import { prisma } from '../prisma.js';
 import { createTransfer, cancelTransfer, retryTransfer } from '../services/transfer-service.js';
+import { createMultiTransfer } from '../services/multi-transfer-service.js';
 import { sseManager } from '../services/sse-manager.js';
 import { CreateTransferSchema } from '@tunemymusic/types';
 import { z } from 'zod';
@@ -27,7 +29,7 @@ export async function transferRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
 
   // POST /api/transfers — create + queue transfer
-  app.post('/', async (request, reply) => {
+  app.post('/', { preHandler: [checkTransferLimit, checkTrackLimit] }, async (request, reply) => {
     const parsed = CreateTransferSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
@@ -229,6 +231,36 @@ export async function transferRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: 'Transfer not found' });
       }
       return reply.status(400).send({ error: err?.message ?? 'Failed to retry transfer' });
+    }
+  });
+
+  // POST /api/transfers/multi — create transfers to multiple destinations
+  app.post('/multi', async (request, reply) => {
+    const MultiTransferSchema = z.object({
+      sourcePlatform: z.string(),
+      sourcePlaylistId: z.string(),
+      sourcePlaylistName: z.string(),
+      destinations: z.array(
+        z.object({
+          platform: z.string(),
+          options: z.record(z.any()).optional(),
+        }),
+      ).min(1),
+    });
+
+    const parsed = MultiTransferSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: parsed.error.issues });
+    }
+
+    try {
+      const transferIds = await createMultiTransfer(request.userId, parsed.data as any);
+      return reply.status(201).send({ transferIds });
+    } catch (err: any) {
+      if (err?.message?.includes('No active connection')) {
+        return reply.status(422).send({ error: err.message });
+      }
+      return reply.status(500).send({ error: err?.message ?? 'Failed to create transfers' });
     }
   });
 

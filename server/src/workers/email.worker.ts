@@ -151,10 +151,6 @@ export function startEmailWorker(): Worker<EmailJobData> {
     {
       connection,
       concurrency: 3,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-      },
     },
   );
 

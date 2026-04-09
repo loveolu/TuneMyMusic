@@ -58,7 +58,7 @@ async function getStripe() {
     throw new Error('STRIPE_SECRET_KEY is not configured');
   }
   const { default: Stripe } = await import('stripe');
-  _stripe = new Stripe(key, { apiVersion: '2025-01-27.acacia' });
+  _stripe = new Stripe(key);
   return _stripe;
 }
 

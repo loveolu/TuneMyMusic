@@ -26,7 +26,7 @@ export async function createNotification(
       type,
       title,
       body,
-      data: data ?? {},
+      data: (data ?? {}) as any,
     },
   });
 }

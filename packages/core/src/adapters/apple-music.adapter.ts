@@ -234,7 +234,7 @@ export class AppleMusicAdapter extends BasePlatformAdapter {
     let path: string | undefined = firstPath;
 
     while (path) {
-      const page = await this.request<AppleMusicPagedResponse<T>>(path, musicUserToken);
+      const page: AppleMusicPagedResponse<T> = await this.request<AppleMusicPagedResponse<T>>(path, musicUserToken);
       results.push(...page.data);
       path = page.next;
     }

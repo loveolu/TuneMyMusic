@@ -155,8 +155,8 @@ export class DeezerAdapter extends BasePlatformAdapter {
     let url: string | null = `/user/me/playlists`;
 
     while (url !== null) {
-      const data = await this.get<DeezerPaginatedResponse<DeezerPlaylist>>(accessToken, url);
-      playlists.push(...data.data.map((p) => this.mapPlaylist(p)));
+      const data: DeezerPaginatedResponse<DeezerPlaylist> = await this.get<DeezerPaginatedResponse<DeezerPlaylist>>(accessToken, url);
+      playlists.push(...data.data.map((p: DeezerPlaylist) => this.mapPlaylist(p)));
 
       // Deezer provides a "next" full URL for pagination
       url = data.next ? this.relativeOrAbsolute(data.next) : null;
@@ -170,8 +170,8 @@ export class DeezerAdapter extends BasePlatformAdapter {
     let url: string | null = `/playlist/${playlistId}/tracks`;
 
     while (url !== null) {
-      const data = await this.get<DeezerPaginatedResponse<DeezerTrack>>(accessToken, url);
-      tracks.push(...data.data.map((t) => this.mapTrack(t)));
+      const data: DeezerPaginatedResponse<DeezerTrack> = await this.get<DeezerPaginatedResponse<DeezerTrack>>(accessToken, url);
+      tracks.push(...data.data.map((t: DeezerTrack) => this.mapTrack(t)));
       url = data.next ? this.relativeOrAbsolute(data.next) : null;
     }
 
@@ -241,8 +241,8 @@ export class DeezerAdapter extends BasePlatformAdapter {
     let url: string | null = `/user/me/tracks?limit=50`;
 
     while (url !== null && tracks.length < limit) {
-      const data = await this.get<DeezerPaginatedResponse<DeezerTrack>>(accessToken, url);
-      tracks.push(...data.data.map((t) => this.mapTrack(t)));
+      const data: DeezerPaginatedResponse<DeezerTrack> = await this.get<DeezerPaginatedResponse<DeezerTrack>>(accessToken, url);
+      tracks.push(...data.data.map((t: DeezerTrack) => this.mapTrack(t)));
       url = data.next ? this.relativeOrAbsolute(data.next) : null;
     }
 

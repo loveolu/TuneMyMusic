@@ -2,3 +2,10 @@ packages:
   - "apps/*"
   - "packages/*"
   - "server"
+
+onlyBuiltDependencies:
+  - "@prisma/client"
+  - "@prisma/engines"
+  - "esbuild"
+  - "msgpackr-extract"
+  - "prisma"

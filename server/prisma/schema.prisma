@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserPlan {
+  FREE
+  PRO
+  UNLIMITED
+}
+
+enum Platform {
+  SPOTIFY
+  APPLE_MUSIC
+  YOUTUBE_MUSIC
+  AMAZON_MUSIC
+  TIDAL
+  DEEZER
+  SOUNDCLOUD
+  PANDORA
+  QOBUZ
+  NAPSTER
+}
+
+enum TransferStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  MATCHING
+  IMPORTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TrackMatchStatus {
+  MATCHED
+  NOT_FOUND
+  PARTIAL_MATCH
+  SKIPPED
+  FAILED
+}
+
+enum MatchMethod {
+  ISRC
+  EXACT
+  FUZZY
+  MANUAL
+}
+
+model User {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  passwordHash     String
+  name             String?
+  avatarUrl        String?
+  plan             UserPlan @default(FREE)
+  stripeCustomerId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  connections      PlatformConnection[]
+  transfers        Transfer[]
+  savedPlaylists   SavedPlaylist[]
+  schedules        TransferSchedule[]
+  notifications    Notification[]
+}
+
+model PlatformConnection {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform         Platform
+  accessToken      String
+  refreshToken     String?
+  expiresAt        DateTime?
+  platformUserId   String?
+  platformUsername  String?
+  isActive         Boolean  @default(true)
+  connectedAt      DateTime @default(now())
+
+  @@unique([userId, platform, platformUserId])
+  @@index([userId])
+}
+
+model Transfer {
+  id                      String         @id @default(cuid())
+  userId                  String
+  user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourcePlatform          Platform
+  destinationPlatform     Platform
+  sourcePlaylistId        String
+  sourcePlaylistName      String
+  destinationPlaylistId   String?
+  destinationPlaylistName String?
+  status                  TransferStatus @default(PENDING)
+  totalTracks             Int            @default(0)
+  matchedTracks           Int            @default(0)
+  failedTracks            Int            @default(0)
+  skippedTracks           Int            @default(0)
+  matchRate               Float          @default(0)
+  options                 Json           @default("{}")
+  startedAt               DateTime?
+  completedAt             DateTime?
+  createdAt               DateTime       @default(now())
+  errorMessage            String?
+  jobId                   String?
+
+  tracks                  TransferTrack[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model TransferTrack {
+  id                   String           @id @default(cuid())
+  transferId           String
+  transfer             Transfer         @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  sourceTrackId        String?
+  sourceTrackName      String
+  sourceArtist         String
+  sourceAlbum          String?
+  sourceDuration       Int?
+  sourceIsrc           String?
+  destinationTrackId   String?
+  destinationTrackName String?
+  destinationArtist    String?
+  status               TrackMatchStatus @default(FAILED)
+  confidenceScore      Float            @default(0)
+  matchMethod          MatchMethod?
+  manuallyReviewed     Boolean          @default(false)
+  manuallySelectedId   String?
+
+  @@index([transferId])
+}
+
+model SavedPlaylist {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  description        String?
+  platform           Platform
+  platformPlaylistId String
+  trackCount         Int      @default(0)
+  artworkUrl         String?
+  snapshot           Json?
+  lastSyncedAt       DateTime?
+
+  schedules          TransferSchedule[]
+
+  @@index([userId])
+}
+
+model TransferSchedule {
+  id                    String        @id @default(cuid())
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  savedPlaylistId       String
+  savedPlaylist         SavedPlaylist @relation(fields: [savedPlaylistId], references: [id], onDelete: Cascade)
+  destinationPlatform   Platform
+  destinationPlaylistId String?
+  cronExpression        String
+  timezone              String        @default("UTC")
+  isActive              Boolean       @default(true)
+  lastRanAt             DateTime?
+  nextRunAt             DateTime?
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  data      Json?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+}

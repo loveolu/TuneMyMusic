@@ -1,0 +1,10 @@
+{
+  "name": "mobile",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Mobile app placeholder — Expo setup in Phase 5'",
+    "build": "echo 'Mobile app placeholder'",
+    "lint": "echo 'Mobile app placeholder'"
+  }
+}

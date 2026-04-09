@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "TuneMyMusic",
+    "slug": "tunemymusic",
+    "version": "1.0.0",
+    "scheme": "tunemymusic",
+    "platforms": ["ios", "android"],
+    "icon": "./assets/icon.png",
+    "splash": {
+      "backgroundColor": "#0A0A0B"
+    },
+    "ios": { "bundleIdentifier": "com.tunemymusic.app" },
+    "android": { "package": "com.tunemymusic.app" },
+    "plugins": ["expo-router", "expo-secure-store"]
+  }
+}

@@ -1,4 +1,4 @@
-import { Worker, Queue, QueueScheduler } from 'bullmq';
+import { Worker, Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { config } from '../config.js';
 import { prisma } from '../prisma.js';

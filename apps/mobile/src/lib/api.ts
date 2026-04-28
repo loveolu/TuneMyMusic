@@ -1,6 +1,30 @@
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 
-const API_URL = 'http://localhost:3001'; // TODO: env config
+/**
+ * Resolve the API base URL with the following priority:
+ *
+ *   1. EXPO_PUBLIC_API_URL  — Expo's recommended public env var; surfaces
+ *      via process.env at runtime in the JS bundle. Set it in .env or via
+ *      EAS build profiles for staging/prod builds.
+ *   2. expo-constants extra.apiUrl — set in app.json's `extra` block. Useful
+ *      for stable per-environment overrides without re-bundling.
+ *   3. Hard fallback to http://localhost:3001 for the simple-case dev loop
+ *      (Expo Go on a simulator, server running on the host).
+ *
+ * NOTE: physical Android devices on the same Wi-Fi as the dev machine
+ * cannot resolve `localhost`. Set EXPO_PUBLIC_API_URL=http://<your-LAN-ip>:3001
+ * in `.env` to test on real hardware.
+ */
+function resolveApiUrl(): string {
+  const fromEnv = process.env.EXPO_PUBLIC_API_URL;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
+  const fromExtra = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl;
+  if (typeof fromExtra === 'string' && fromExtra.length > 0) return fromExtra;
+  return 'http://localhost:3001';
+}
+
+const API_URL = resolveApiUrl();
 
 class ApiClient {
   private token: string | null = null;

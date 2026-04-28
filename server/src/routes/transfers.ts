@@ -28,7 +28,14 @@ const ManualMatchSchema = z.object({
 export async function transferRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireAuth);
 
-  // POST /api/transfers — create + queue transfer
+  // POST /api/transfers — create + queue transfer.
+  //
+  // Idempotency: createTransfer dedupes on
+  //   (userId, sourcePlatform, destinationPlatform, sourcePlaylistId)
+  // within a 60s window OR while an existing transfer is still active. When
+  // a duplicate request hits this route we return 200 with the *existing*
+  // transfer (and an `idempotent: true` flag) instead of 201. This protects
+  // against double-clicks, retried POSTs, and tab-restored mutations.
   app.post('/', { preHandler: [checkTransferLimit, checkTrackLimit] }, async (request, reply) => {
     const parsed = CreateTransferSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -37,7 +44,11 @@ export async function transferRoutes(app: FastifyInstance) {
 
     try {
       const transfer = await createTransfer(request.userId, parsed.data);
-      return reply.status(201).send({ transfer });
+      const isIdempotent = (transfer as { idempotent?: boolean }).idempotent === true;
+      return reply.status(isIdempotent ? 200 : 201).send({
+        transfer,
+        idempotent: isIdempotent,
+      });
     } catch (err: any) {
       if (err?.message?.includes('No active connection')) {
         return reply.status(422).send({ error: err.message });

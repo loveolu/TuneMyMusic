@@ -2,6 +2,20 @@ import { prisma } from '../prisma.js';
 import { transferQueue } from '../workers/transfer.worker.js';
 import type { CreateTransfer } from '@tunemymusic/types';
 
+/**
+ * Window during which an identical-looking transfer request from the same
+ * user is treated as a duplicate (e.g. double-clicked submit button, retry
+ * after spotty network) and we return the existing in-flight transfer
+ * instead of creating a new one.
+ *
+ * Defensible default: 60 seconds. Long enough to cover network retries and
+ * accidental refreshes, short enough that a user who legitimately wants to
+ * re-transfer the same playlist can do so within a minute.
+ */
+const IDEMPOTENCY_WINDOW_MS = 60_000;
+
+const ACTIVE_STATUSES = ['PENDING', 'QUEUED', 'PROCESSING', 'MATCHING', 'IMPORTING'] as const;
+
 export async function createTransfer(userId: string, input: CreateTransfer) {
   // Validate source connection exists
   const sourceConnection = await prisma.platformConnection.findFirst({
@@ -31,6 +45,43 @@ export async function createTransfer(userId: string, input: CreateTransfer) {
     );
   }
 
+  // Idempotency / double-click guard.
+  //
+  // Look for a recent transfer for the same (userId, sourcePlatform,
+  // destinationPlatform, sourcePlaylistId) tuple. If one is still active OR
+  // was created within IDEMPOTENCY_WINDOW_MS, return it instead of queuing
+  // another job.
+  //
+  // Why this matters: the Stripe-style "natural key" approach prevents
+  // 1. accidental double-charge on plan-limited users (createTransfer
+  //    increments their usage counter via plan-limits middleware),
+  // 2. duplicate playlist creations on the destination (which are a pain to
+  //    clean up because they're real, populated playlists), and
+  // 3. duplicated BullMQ jobs racing on the same Transfer row.
+  //
+  // We don't dedupe on `options` — re-submitting with different toggles is a
+  // legitimate "I changed my mind" action.
+  const recentCutoff = new Date(Date.now() - IDEMPOTENCY_WINDOW_MS);
+  const existing = await prisma.transfer.findFirst({
+    where: {
+      userId,
+      sourcePlatform: input.sourcePlatform as any,
+      destinationPlatform: input.destinationPlatform as any,
+      sourcePlaylistId: input.sourcePlaylistId,
+      OR: [
+        { status: { in: ACTIVE_STATUSES as any } },
+        { createdAt: { gte: recentCutoff } },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (existing) {
+    // Return the existing transfer with an `idempotent: true` marker so the
+    // route handler can surface it (200 instead of 201, optionally).
+    return Object.assign(existing, { idempotent: true as const });
+  }
+
   // Create Transfer record in DB
   const transfer = await prisma.transfer.create({
     data: {
@@ -58,6 +109,10 @@ export async function createTransfer(userId: string, input: CreateTransfer) {
       jobId: transfer.id,
       attempts: 3,
       backoff: { type: 'exponential', delay: 5000 },
+      // Cap retention so a high-volume user doesn't fill Redis with their
+      // own job graveyard. Failures stay around longer for debugging.
+      removeOnComplete: { count: 1000, age: 24 * 3600 },
+      removeOnFail: { count: 5000, age: 7 * 24 * 3600 },
     },
   );
 
@@ -67,7 +122,7 @@ export async function createTransfer(userId: string, input: CreateTransfer) {
     data: { jobId: job.id ?? null },
   });
 
-  return transfer;
+  return Object.assign(transfer, { idempotent: false as const });
 }
 
 export async function cancelTransfer(transferId: string, userId: string): Promise<void> {

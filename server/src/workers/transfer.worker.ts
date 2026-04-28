@@ -22,6 +22,25 @@ const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 // Export the queue so transfer-service can add jobs
 export const transferQueue = new Queue<TransferJobData>('transfers', { connection });
 
+/**
+ * Dead-letter queue for transfer jobs that fail all retry attempts.
+ *
+ * BullMQ doesn't have a first-class DLQ — by convention you push the failed
+ * job's payload + error info onto a separate queue so an operator can
+ * inspect it, replay it, or just observe an alert metric on its depth.
+ *
+ * Jobs land here from the worker's `failed` event when `attemptsMade >=
+ * opts.attempts` (i.e. truly exhausted, not just transient retries).
+ *
+ * To replay a DLQ entry:
+ *   const job = await transferDlq.getJob(<id>);
+ *   await transferQueue.add('process-transfer', job.data, { jobId: ... });
+ */
+export const transferDlq = new Queue<TransferJobData & { failureReason: string; failedAt: string }>(
+  'transfers-dlq',
+  { connection },
+);
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -300,12 +319,82 @@ export function startTransferWorker(): Worker<TransferJobData> {
     },
   );
 
-  worker.on('failed', (job, err) => {
-    console.error(`Transfer job ${job?.id} failed:`, err);
+  // 'failed' fires on EVERY attempt (transient + final). Distinguish them by
+  // comparing attemptsMade against the configured max — only the final
+  // failure goes to the DLQ and emits a loud alert log line.
+  worker.on('failed', async (job, err) => {
+    if (!job) {
+      console.error('[TransferWorker] failed event without job:', err);
+      return;
+    }
+
+    const attemptsMade = job.attemptsMade ?? 0;
+    const maxAttempts = job.opts?.attempts ?? 1;
+    const isFinal = attemptsMade >= maxAttempts;
+
+    if (!isFinal) {
+      // Transient — will retry. Single line, structured.
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          event: 'transfer_job_attempt_failed',
+          jobId: job.id,
+          transferId: job.data?.transferId,
+          attempt: attemptsMade,
+          maxAttempts,
+          error: err?.message,
+        }),
+      );
+      return;
+    }
+
+    // FINAL failure — push to DLQ and emit a structured alert line. This
+    // line is intentionally easy to grep/alert on (event=transfer_job_dlq)
+    // because we don't have an external alerting service per the
+    // launch-no-new-integrations constraint.
+    try {
+      await transferDlq.add(
+        'failed-transfer',
+        {
+          ...job.data,
+          failureReason: err?.message ?? 'unknown',
+          failedAt: new Date().toISOString(),
+        },
+        {
+          // Cap DLQ retention at 1k entries to bound Redis memory. Operators
+          // should drain the DLQ regularly; this is a safety belt.
+          removeOnComplete: false,
+          removeOnFail: false,
+        },
+      );
+    } catch (dlqErr) {
+      console.error('[TransferWorker] FAILED to push job to DLQ:', dlqErr);
+    }
+
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'transfer_job_dlq',
+        alert: true,
+        jobId: job.id,
+        transferId: job.data?.transferId,
+        userId: job.data?.userId,
+        attempts: attemptsMade,
+        error: err?.message,
+        stack: err?.stack,
+      }),
+    );
   });
 
   worker.on('completed', (job) => {
-    console.log(`Transfer job ${job.id} completed`);
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'transfer_job_completed',
+        jobId: job.id,
+        transferId: job.data?.transferId,
+      }),
+    );
   });
 
   return worker;

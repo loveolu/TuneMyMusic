@@ -22,7 +22,12 @@ export interface MusicPlatformAdapter {
   readonly supportsWrite: boolean;
 
   getAuthUrl(state: string, redirectUri: string): string;
-  exchangeCodeForTokens(code: string, redirectUri: string): Promise<OAuthTokens>;
+  /**
+   * Exchange the OAuth `code` for tokens.
+   * `state` is forwarded so adapters that store per-flow secrets (e.g. PKCE
+   * code_verifier) can look them up by state.
+   */
+  exchangeCodeForTokens(code: string, redirectUri: string, state?: string): Promise<OAuthTokens>;
   refreshTokens(refreshToken: string): Promise<OAuthTokens>;
   getUserProfile(accessToken: string): Promise<PlatformUserProfile>;
   getUserPlaylists(accessToken: string): Promise<Playlist[]>;
@@ -41,7 +46,7 @@ export abstract class BasePlatformAdapter implements MusicPlatformAdapter {
   readonly supportsWrite: boolean = true;
 
   abstract getAuthUrl(state: string, redirectUri: string): string;
-  abstract exchangeCodeForTokens(code: string, redirectUri: string): Promise<OAuthTokens>;
+  abstract exchangeCodeForTokens(code: string, redirectUri: string, state?: string): Promise<OAuthTokens>;
   abstract refreshTokens(refreshToken: string): Promise<OAuthTokens>;
   abstract getUserProfile(accessToken: string): Promise<PlatformUserProfile>;
   abstract getUserPlaylists(accessToken: string): Promise<Playlist[]>;

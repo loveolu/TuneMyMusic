@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import rawBody from 'fastify-raw-body';
 import { config } from './config.js';
 import { authRoutes } from './routes/auth.js';
 import { connectionRoutes } from './routes/connections.js';
@@ -19,6 +20,15 @@ export async function buildApp() {
   const app = Fastify({ logger: true });
 
   await app.register(cors, { origin: config.corsOrigin, credentials: true });
+
+  // Register raw-body plugin so Stripe webhook handler can verify signatures.
+  // `global: false` means routes opt in via { config: { rawBody: true } }.
+  await app.register(rawBody, {
+    field: 'rawBody',
+    global: false,
+    runFirst: true,
+    encoding: false, // keep raw Buffer (required by stripe.webhooks.constructEvent)
+  });
 
   // Register rate limiting (in-memory, no extra deps)
   await registerRateLimit(app);

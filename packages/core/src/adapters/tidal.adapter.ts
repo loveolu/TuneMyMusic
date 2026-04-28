@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import type {
   OAuthTokens,
   Playlist,
@@ -70,23 +71,26 @@ interface TidalPaginatedResponse<T> {
 
 // ─── Helper: generate PKCE code_verifier / code_challenge ────────────────────
 
-function base64UrlEncode(buffer: Uint8Array): string {
-  return btoa(String.fromCharCode(...buffer))
+function base64UrlEncode(buffer: Uint8Array | Buffer): string {
+  return Buffer.from(buffer)
+    .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=/g, '');
 }
 
-async function generatePKCE(): Promise<{ codeVerifier: string; codeChallenge: string }> {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  const codeVerifier = base64UrlEncode(array);
-  const encoder = new TextEncoder();
-  const data = encoder.encode(codeVerifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const codeChallenge = base64UrlEncode(new Uint8Array(digest));
+/**
+ * Synchronous PKCE generation. Server-side (Node), so we use the synchronous
+ * `crypto.createHash` API rather than the async `crypto.subtle.digest`.
+ */
+function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
+  const codeVerifier = base64UrlEncode(randomBytes(32));
+  const codeChallenge = base64UrlEncode(createHash('sha256').update(codeVerifier).digest());
   return { codeVerifier, codeChallenge };
 }
+
+// PKCE verifier TTL — Tidal flows must complete within this window.
+const PKCE_VERIFIER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
@@ -99,8 +103,10 @@ export class TidalAdapter extends BasePlatformAdapter {
   private readonly clientSecret: string;
   private readonly countryCode: string;
 
-  // PKCE verifier is generated per-auth-flow; stored for exchangeCodeForTokens
-  private pkceVerifier: string | null = null;
+  // PKCE verifier store, keyed by OAuth `state` so concurrent auth flows
+  // (multiple users hitting the same singleton adapter) don't trample each
+  // other. Entries auto-expire after PKCE_VERIFIER_TTL_MS.
+  private readonly pkceStore = new Map<string, { verifier: string; expiresAt: number }>();
 
   constructor(config: TidalConfig) {
     super();
@@ -112,34 +118,16 @@ export class TidalAdapter extends BasePlatformAdapter {
   // ── Auth ──────────────────────────────────────────────────────────────────
 
   getAuthUrl(state: string, redirectUri: string): string {
-    // For sync use we generate a synchronous-friendly verifier without crypto.subtle
-    const array = new Uint8Array(32);
-    crypto.getRandomValues(array);
-    this.pkceVerifier = base64UrlEncode(array);
-
-    // We store the plain verifier and compute the challenge lazily during exchange.
-    // For the URL, we'll use a synchronous SHA-256 placeholder approach:
-    // The real challenge is computed in exchangeCodeForTokens from the stored verifier.
-    // Callers that need the challenge before exchange should use getAuthUrlAsync.
-    const params = new URLSearchParams({
-      response_type: 'code',
-      client_id: this.clientId,
-      redirect_uri: redirectUri,
-      scope: SCOPES,
-      state,
-      code_challenge_method: 'S256',
-      code_challenge: 'PENDING', // replaced in getAuthUrlAsync
+    // Generate PKCE pair synchronously (Node SHA-256). Verifier is stashed
+    // keyed by `state` so the callback handler can pass `state` to
+    // exchangeCodeForTokens and we can pull the matching verifier out.
+    this.cleanupExpiredPkce();
+    const { codeVerifier, codeChallenge } = generatePKCE();
+    this.pkceStore.set(state, {
+      verifier: codeVerifier,
+      expiresAt: Date.now() + PKCE_VERIFIER_TTL_MS,
     });
-    return `${AUTH_URL}?${params.toString()}`;
-  }
 
-  /**
-   * Async version that properly computes the PKCE challenge.
-   * Prefer this over getAuthUrl in real usage.
-   */
-  async getAuthUrlAsync(state: string, redirectUri: string): Promise<string> {
-    const { codeVerifier, codeChallenge } = await generatePKCE();
-    this.pkceVerifier = codeVerifier;
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: this.clientId,
@@ -152,13 +140,24 @@ export class TidalAdapter extends BasePlatformAdapter {
     return `${AUTH_URL}?${params.toString()}`;
   }
 
-  async exchangeCodeForTokens(code: string, redirectUri: string): Promise<OAuthTokens> {
+  async exchangeCodeForTokens(
+    code: string,
+    redirectUri: string,
+    state?: string,
+  ): Promise<OAuthTokens> {
+    this.cleanupExpiredPkce();
+
+    // Look up the PKCE verifier that was stored when getAuthUrl was called.
+    // Without it Tidal will reject the exchange with `invalid_grant`.
+    const codeVerifier = state ? this.pkceStore.get(state)?.verifier : undefined;
+    if (state) this.pkceStore.delete(state); // one-shot
+
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
       client_id: this.clientId,
-      ...(this.pkceVerifier ? { code_verifier: this.pkceVerifier } : {}),
+      ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
     });
 
     const response = await this.fetchWithRetry(TOKEN_URL, {
@@ -178,8 +177,6 @@ export class TidalAdapter extends BasePlatformAdapter {
       scope?: string;
     };
 
-    this.pkceVerifier = null;
-
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
@@ -187,6 +184,13 @@ export class TidalAdapter extends BasePlatformAdapter {
       tokenType: data.token_type ?? 'Bearer',
       scope: data.scope,
     };
+  }
+
+  private cleanupExpiredPkce(): void {
+    const now = Date.now();
+    for (const [state, entry] of this.pkceStore.entries()) {
+      if (entry.expiresAt <= now) this.pkceStore.delete(state);
+    }
   }
 
   async refreshTokens(refreshToken: string): Promise<OAuthTokens> {

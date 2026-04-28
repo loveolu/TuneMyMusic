@@ -12,6 +12,108 @@ import { BasePlatformAdapter, type PlatformUserProfile } from './base.js';
 interface YouTubeConfig {
   clientId: string;
   clientSecret: string;
+  /**
+   * Daily quota cap (units). YouTube Data API v3 default is 10,000 / day.
+   * The adapter soft-fails at `quotaSoftCap` (default 90%) so callers see a
+   * graceful error before Google starts returning 403 quotaExceeded.
+   */
+  dailyQuotaLimit?: number;
+  quotaSoftCap?: number;
+  /**
+   * Optional hook fired after each quota-costing call. Use this to persist
+   * usage to a DB row keyed by `(date, userId)` from the server side.
+   * The adapter itself only keeps an in-memory counter.
+   */
+  onQuotaUsage?: (info: {
+    cost: number;
+    operation: string;
+    totalUsedToday: number;
+    dateUtc: string; // YYYY-MM-DD
+  }) => void | Promise<void>;
+}
+
+// ---- YouTube Data API v3 quota costs (units per call). See:
+//      https://developers.google.com/youtube/v3/determine_quota_cost
+const QUOTA_COSTS = {
+  search: 100, // search.list
+  list: 1, // {playlists,playlistItems,videos,channels}.list
+  insert: 50, // playlists.insert, playlistItems.insert
+  videosRate: 50, // videos.rate
+} as const;
+
+type QuotaOperation = keyof typeof QUOTA_COSTS;
+
+/**
+ * Daily YouTube Data API quota tracker. In-memory; resets at UTC midnight.
+ * Throws a user-friendly error once usage hits the soft cap so we surface a
+ * clean failure to the user before Google starts returning 403 quotaExceeded.
+ */
+export class YouTubeQuotaTracker {
+  private dateUtc: string = todayUtc();
+  private usedToday = 0;
+
+  constructor(
+    private readonly limit: number,
+    private readonly softCap: number,
+    private readonly onUsage?: YouTubeConfig['onQuotaUsage'],
+  ) {}
+
+  /** Throws if recording the next call would exceed the soft cap. */
+  preflight(operation: QuotaOperation): void {
+    this.rollIfNewDay();
+    const cost = QUOTA_COSTS[operation];
+    if (this.usedToday + cost > this.softCap) {
+      const err = new Error(
+        `YouTube daily quota nearly exhausted (${this.usedToday}/${this.limit} units used today). ` +
+          `Please try again after UTC midnight, or upgrade your YouTube Data API quota.`,
+      );
+      (err as Error & { code?: string }).code = 'YOUTUBE_QUOTA_EXHAUSTED';
+      throw err;
+    }
+  }
+
+  /** Records the spend and fires onUsage hook (fire-and-forget). */
+  record(operation: QuotaOperation): void {
+    this.rollIfNewDay();
+    const cost = QUOTA_COSTS[operation];
+    this.usedToday += cost;
+    if (this.onUsage) {
+      // Don't await — adapter callers should not block on persistence.
+      void Promise.resolve(
+        this.onUsage({
+          cost,
+          operation,
+          totalUsedToday: this.usedToday,
+          dateUtc: this.dateUtc,
+        }),
+      ).catch(() => {
+        // Swallow persistence errors. The in-memory counter is still correct.
+      });
+    }
+  }
+
+  /** Test/inspection helper. */
+  snapshot(): { dateUtc: string; usedToday: number; limit: number; softCap: number } {
+    this.rollIfNewDay();
+    return {
+      dateUtc: this.dateUtc,
+      usedToday: this.usedToday,
+      limit: this.limit,
+      softCap: this.softCap,
+    };
+  }
+
+  private rollIfNewDay(): void {
+    const now = todayUtc();
+    if (now !== this.dateUtc) {
+      this.dateUtc = now;
+      this.usedToday = 0;
+    }
+  }
+}
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ---- YouTube API response shapes ----
@@ -177,8 +279,25 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     'https://www.googleapis.com/auth/youtube.readonly',
   ].join(' ');
 
+  /** Public so server-side code can inspect / persist current usage. */
+  readonly quota: YouTubeQuotaTracker;
+
   constructor(private config: YouTubeConfig) {
     super();
+    const limit = config.dailyQuotaLimit ?? 10_000;
+    const softCap = config.quotaSoftCap ?? 9_000;
+    this.quota = new YouTubeQuotaTracker(limit, softCap, config.onQuotaUsage);
+  }
+
+  /**
+   * Wrap a quota-costing API call: preflight the soft cap, run the call,
+   * record the spend on success.
+   */
+  private async withQuota<T>(operation: QuotaOperation, fn: () => Promise<T>): Promise<T> {
+    this.quota.preflight(operation);
+    const result = await fn();
+    this.quota.record(operation);
+    return result;
   }
 
   getAuthUrl(state: string, redirectUri: string): string {
@@ -254,22 +373,24 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
   }
 
   async getUserProfile(accessToken: string): Promise<PlatformUserProfile> {
-    const url = `${this.BASE_URL}/channels?part=snippet&mine=true`;
-    const res = await ytFetch(url, { headers: authHeaders(accessToken) });
-    await assertOk(res);
-    const data = (await res.json()) as YTListResponse<{
-      id: string;
-      snippet: { title: string; thumbnails?: YTThumbnails };
-    }>;
-    const channel = data.items?.[0];
-    if (!channel) {
-      throw new Error('YouTube API: no channel found for authenticated user');
-    }
-    return {
-      platformUserId: channel.id,
-      displayName: channel.snippet.title,
-      avatarUrl: bestThumbnail(channel.snippet.thumbnails),
-    };
+    return this.withQuota('list', async () => {
+      const url = `${this.BASE_URL}/channels?part=snippet&mine=true`;
+      const res = await ytFetch(url, { headers: authHeaders(accessToken) });
+      await assertOk(res);
+      const data = (await res.json()) as YTListResponse<{
+        id: string;
+        snippet: { title: string; thumbnails?: YTThumbnails };
+      }>;
+      const channel = data.items?.[0];
+      if (!channel) {
+        throw new Error('YouTube API: no channel found for authenticated user');
+      }
+      return {
+        platformUserId: channel.id,
+        displayName: channel.snippet.title,
+        avatarUrl: bestThumbnail(channel.snippet.thumbnails),
+      };
+    });
   }
 
   async getUserPlaylists(accessToken: string): Promise<Playlist[]> {
@@ -277,6 +398,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     let pageToken: string | undefined;
 
     while (true) {
+      this.quota.preflight('list');
       const params = new URLSearchParams({
         part: 'snippet,contentDetails,status',
         mine: 'true',
@@ -286,6 +408,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       const url = `${this.BASE_URL}/playlists?${params.toString()}`;
       const res = await ytFetch(url, { headers: authHeaders(accessToken) });
       await assertOk(res);
+      this.quota.record('list');
       const data = (await res.json()) as YTListResponse<YTPlaylistItem>;
 
       for (const item of data.items ?? []) {
@@ -319,6 +442,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
 
     // Step 1: collect all video IDs from the playlist
     while (true) {
+      this.quota.preflight('list');
       const params = new URLSearchParams({
         part: 'snippet',
         playlistId,
@@ -328,6 +452,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       const url = `${this.BASE_URL}/playlistItems?${params.toString()}`;
       const res = await ytFetch(url, { headers: authHeaders(accessToken) });
       await assertOk(res);
+      this.quota.record('list');
       const data = (await res.json()) as YTListResponse<YTPlaylistItemResource>;
 
       for (const item of data.items ?? []) {
@@ -346,6 +471,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     const tracks: Track[] = [];
     const BATCH = 50;
     for (let i = 0; i < videoIds.length; i += BATCH) {
+      this.quota.preflight('list');
       const ids = videoIds.slice(i, i + BATCH).join(',');
       const params = new URLSearchParams({
         part: 'snippet,contentDetails',
@@ -354,6 +480,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       const url = `${this.BASE_URL}/videos?${params.toString()}`;
       const res = await ytFetch(url, { headers: authHeaders(accessToken) });
       await assertOk(res);
+      this.quota.record('list');
       const data = (await res.json()) as YTListResponse<YTVideoResource>;
       for (const video of data.items ?? []) {
         tracks.push(mapVideoToTrack(video));
@@ -369,6 +496,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     description?: string,
     isPublic?: boolean,
   ): Promise<Playlist> {
+    this.quota.preflight('insert');
     const url = `${this.BASE_URL}/playlists?part=snippet,status`;
     const res = await ytFetch(url, {
       method: 'POST',
@@ -382,6 +510,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       }),
     });
     await assertOk(res);
+    this.quota.record('insert');
     const data = (await res.json()) as YTPlaylistItem & { status: YTPlaylistStatus };
     return {
       id: data.id,
@@ -400,8 +529,9 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     playlistId: string,
     trackIds: string[],
   ): Promise<void> {
-    // YouTube API requires one request per track
+    // YouTube API requires one request per track. Each insert costs 50 units.
     for (const videoId of trackIds) {
+      this.quota.preflight('insert');
       const url = `${this.BASE_URL}/playlistItems?part=snippet`;
       const res = await ytFetch(url, {
         method: 'POST',
@@ -417,10 +547,15 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
         }),
       });
       await assertOk(res);
+      this.quota.record('insert');
     }
   }
 
   async searchTrack(accessToken: string, query: TrackQuery): Promise<TrackSearchResult[]> {
+    // search.list is 100 units — easily the most expensive call. Preflight
+    // first so we abort BEFORE making the request when the quota is nearly
+    // exhausted.
+    this.quota.preflight('search');
     const q = `${query.name} ${query.artist}`;
     const searchParams = new URLSearchParams({
       part: 'snippet',
@@ -432,13 +567,15 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     const searchUrl = `${this.BASE_URL}/search?${searchParams.toString()}`;
     const searchRes = await ytFetch(searchUrl, { headers: authHeaders(accessToken) });
     await assertOk(searchRes);
+    this.quota.record('search');
     const searchData = (await searchRes.json()) as {
       items?: Array<{ id: { videoId: string }; snippet: YTVideoSnippet }>;
     };
 
     if (!searchData.items?.length) return [];
 
-    // Fetch video details for duration info
+    // Fetch video details for duration info (videos.list = 1 unit)
+    this.quota.preflight('list');
     const ids = searchData.items.map((i) => i.id.videoId).join(',');
     const detailParams = new URLSearchParams({
       part: 'snippet,contentDetails',
@@ -447,6 +584,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     const detailUrl = `${this.BASE_URL}/videos?${detailParams.toString()}`;
     const detailRes = await ytFetch(detailUrl, { headers: authHeaders(accessToken) });
     await assertOk(detailRes);
+    this.quota.record('list');
     const detailData = (await detailRes.json()) as YTListResponse<YTVideoResource>;
 
     return (detailData.items ?? []).map((video) => ({
@@ -466,6 +604,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
     let pageToken: string | undefined;
 
     while (true) {
+      this.quota.preflight('list');
       const params = new URLSearchParams({
         part: 'snippet,contentDetails',
         myRating: 'like',
@@ -475,6 +614,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       const url = `${this.BASE_URL}/videos?${params.toString()}`;
       const res = await ytFetch(url, { headers: authHeaders(accessToken) });
       await assertOk(res);
+      this.quota.record('list');
       const data = (await res.json()) as YTListResponse<YTVideoResource>;
 
       for (const video of data.items ?? []) {
@@ -492,6 +632,7 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
   }
 
   async likeTrack(accessToken: string, trackId: string): Promise<void> {
+    this.quota.preflight('videosRate');
     const params = new URLSearchParams({ id: trackId, rating: 'like' });
     const url = `${this.BASE_URL}/videos/rate?${params.toString()}`;
     const res = await ytFetch(url, {
@@ -499,5 +640,6 @@ export class YouTubeMusicAdapter extends BasePlatformAdapter {
       headers: authHeaders(accessToken),
     });
     await assertOk(res);
+    this.quota.record('videosRate');
   }
 }

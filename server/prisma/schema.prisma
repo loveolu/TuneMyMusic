@@ -186,3 +186,19 @@ model Notification {
 
   @@index([userId, read])
 }
+
+// Per-day quota usage for external APIs (e.g. YouTube Data API v3 — default
+// 10,000 units/day). Used to surface a user-friendly "quota nearly exhausted"
+// error before the third-party service starts returning 403s.
+//
+// Insert/update with `unitsUsed = unitsUsed + N` keyed on (provider, dateUtc).
+model ApiQuotaUsage {
+  id         String   @id @default(cuid())
+  provider   String
+  dateUtc    String   // YYYY-MM-DD (UTC). String, not DateTime, for simple upserts.
+  unitsUsed  Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([provider, dateUtc])
+  @@index([provider, dateUtc])
+}

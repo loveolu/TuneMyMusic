@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/require-auth.js';
 import { checkConnectionLimit } from '../middleware/plan-limits.js';
 import { prisma } from '../prisma.js';
 import { adapterRegistry } from '../services/adapter-registry.js';
+import { generateOAuthState, consumeOAuthState } from '../services/oauth-state-store.js';
 import { encrypt } from '../utils/encryption.js';
 import { config } from '../config.js';
 import { PlatformId } from '@tunemymusic/types';
@@ -11,6 +12,7 @@ import { z } from 'zod';
 const CallbackBodySchema = z.object({
   code: z.string(),
   redirectUri: z.string().url(),
+  state: z.string().min(1),
 });
 
 const AuthUrlQuerySchema = z.object({
@@ -53,8 +55,14 @@ export async function connectionRoutes(app: FastifyInstance) {
 
     try {
       const adapter = adapterRegistry.getAdapter(platformParsed.data);
-      // Use userId as state for CSRF protection
-      const state = Buffer.from(JSON.stringify({ userId: request.userId })).toString('base64url');
+      // Generate a random one-shot state token bound to (userId, platform,
+      // redirectUri). Stored server-side; verified on callback to prevent
+      // CSRF and cross-account linking.
+      const state = generateOAuthState({
+        userId: request.userId,
+        platform: platformParsed.data,
+        redirectUri: queryParsed.data.redirectUri,
+      });
       const url = adapter.getAuthUrl(state, queryParsed.data.redirectUri);
       return reply.send({ url });
     } catch (err: any) {
@@ -81,13 +89,26 @@ export async function connectionRoutes(app: FastifyInstance) {
         .send({ error: 'Validation failed', details: bodyParsed.error.issues });
     }
 
-    const { code, redirectUri } = bodyParsed.data;
+    const { code, redirectUri, state } = bodyParsed.data;
+
+    // Verify state — must match a server-issued nonce for THIS user, platform,
+    // and redirectUri. One-shot: consumeOAuthState removes it from the store.
+    const stateEntry = consumeOAuthState(state);
+    if (
+      !stateEntry ||
+      stateEntry.userId !== request.userId ||
+      stateEntry.platform !== platformParsed.data ||
+      stateEntry.redirectUri !== redirectUri
+    ) {
+      return reply.status(400).send({ error: 'Invalid or expired OAuth state' });
+    }
 
     try {
       const adapter = adapterRegistry.getAdapter(platformParsed.data);
 
-      // Exchange code for tokens
-      const tokens = await adapter.exchangeCodeForTokens(code, redirectUri);
+      // Exchange code for tokens. `state` is forwarded so adapters that store
+      // per-flow secrets (e.g. Tidal PKCE code_verifier) can resolve them.
+      const tokens = await adapter.exchangeCodeForTokens(code, redirectUri, state);
 
       // Get user profile from platform
       const profile = await adapter.getUserProfile(tokens.accessToken);

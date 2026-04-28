@@ -82,8 +82,13 @@ export async function stripeWebhookRoute(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Missing stripe-signature header' });
       }
 
-      // Access raw body - Fastify stores it as (request as any).rawBody
-      const rawBody: Buffer = (request as any).rawBody ?? Buffer.from(JSON.stringify(request.body));
+      // Access raw body provided by `fastify-raw-body` plugin (registered in app.ts).
+      // Must be the exact bytes Stripe signed; do NOT fall back to JSON.stringify.
+      const rawBody = (request as unknown as { rawBody?: Buffer }).rawBody;
+      if (!rawBody || !Buffer.isBuffer(rawBody)) {
+        request.log.error('Stripe webhook received without rawBody — fastify-raw-body not registered correctly');
+        return reply.status(500).send({ error: 'Server misconfigured: raw body not available' });
+      }
 
       try {
         await handleWebhook(rawBody, signature);

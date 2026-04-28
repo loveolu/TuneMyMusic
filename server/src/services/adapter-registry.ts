@@ -10,6 +10,7 @@ import {
 } from '@tunemymusic/core';
 import type { MusicPlatformAdapter } from '@tunemymusic/core';
 import type { PlatformId } from '@tunemymusic/types';
+import { prisma } from '../prisma.js';
 
 type SupportedPlatformId = Extract<
   PlatformId,
@@ -44,15 +45,46 @@ class AdapterRegistry {
         if (!clientId || !clientSecret) {
           throw new Error('YouTube Music adapter unavailable: missing YOUTUBE_CLIENT_ID or YOUTUBE_CLIENT_SECRET');
         }
-        adapter = new YouTubeMusicAdapter({ clientId, clientSecret });
+        adapter = new YouTubeMusicAdapter({
+          clientId,
+          clientSecret,
+          // Persist quota usage per day so it survives restarts. Soft-cap at
+          // 9000 (90% of 10K default) so the user sees a friendly error
+          // before Google starts returning 403 quotaExceeded.
+          dailyQuotaLimit: Number(process.env.YOUTUBE_DAILY_QUOTA ?? 10_000),
+          quotaSoftCap: Number(process.env.YOUTUBE_QUOTA_SOFT_CAP ?? 9_000),
+          onQuotaUsage: async ({ cost, dateUtc }) => {
+            // Upsert daily counter. Cast through `any` because the model is
+            // added to schema.prisma but `prisma generate` may not yet have
+            // run in the dev environment. Tolerate missing table at runtime
+            // too — adapter still tracks in-memory if persistence fails.
+            try {
+              const client = prisma as unknown as {
+                apiQuotaUsage?: {
+                  upsert: (args: unknown) => Promise<unknown>;
+                };
+              };
+              await client.apiQuotaUsage?.upsert({
+                where: { provider_dateUtc: { provider: 'YOUTUBE', dateUtc } },
+                create: { provider: 'YOUTUBE', dateUtc, unitsUsed: cost },
+                update: { unitsUsed: { increment: cost } },
+              });
+            } catch {
+              // Don't break the user-facing call if the counter table is
+              // unavailable — in-memory tracker still gates requests.
+            }
+          },
+        });
         break;
       }
       case 'APPLE_MUSIC': {
-        const keyId = process.env.APPLE_KEY_ID;
-        const teamId = process.env.APPLE_TEAM_ID;
-        const privateKey = process.env.APPLE_PRIVATE_KEY;
+        const keyId = process.env.APPLE_MUSIC_KEY_ID;
+        const teamId = process.env.APPLE_MUSIC_TEAM_ID;
+        const privateKey = process.env.APPLE_MUSIC_PRIVATE_KEY;
         if (!keyId || !teamId || !privateKey) {
-          throw new Error('Apple Music adapter unavailable: missing APPLE_KEY_ID, APPLE_TEAM_ID, or APPLE_PRIVATE_KEY');
+          throw new Error(
+            'Apple Music adapter unavailable: missing APPLE_MUSIC_KEY_ID, APPLE_MUSIC_TEAM_ID, or APPLE_MUSIC_PRIVATE_KEY',
+          );
         }
         adapter = new AppleMusicAdapter({ keyId, teamId, privateKey });
         break;

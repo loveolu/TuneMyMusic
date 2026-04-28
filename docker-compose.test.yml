@@ -1,0 +1,64 @@
+# Ephemeral Postgres + Redis for the server test suite.
+#
+# The server tests in `server/tests/` import `buildApp()` and call
+# `app.ready()` in `beforeAll` — which connects to Postgres + Redis. Without
+# real infrastructure those tests can't run.
+#
+# Two ways to use this file:
+#
+#   1. Local quick-start (most common):
+#        docker compose -f docker-compose.test.yml up -d
+#        pnpm --filter server prisma db push
+#        pnpm --filter server test
+#        docker compose -f docker-compose.test.yml down -v
+#
+#   2. CI / parallelism: convert the server's `tests/setup.ts` to use
+#      `testcontainers-node` (https://node.testcontainers.org). That gives
+#      you per-suite ephemeral containers without the global state risk of
+#      a shared compose file. Sketch:
+#
+#        import { GenericContainer } from 'testcontainers';
+#        const pg = await new GenericContainer('postgres:16-alpine')
+#          .withEnvironment({ POSTGRES_USER: 'test', POSTGRES_PASSWORD: 'test', POSTGRES_DB: 'test' })
+#          .withExposedPorts(5432)
+#          .start();
+#        process.env.DATABASE_URL = `postgresql://test:test@localhost:${pg.getMappedPort(5432)}/test`;
+#
+#      Add `testcontainers` to server devDependencies and call this from
+#      tests/setup.ts inside `beforeAll`. Tear down in `afterAll`.
+#
+# Ports are intentionally OFFSET from docker-compose.yml (5434 vs 5433,
+# 6380 vs 6379) so you can run BOTH compose files at once: dev stack on the
+# normal ports, test stack on these. Match the env vars in
+# server/vitest.config.ts (DATABASE_URL, REDIS_URL) when switching.
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tunemymusic
+      POSTGRES_PASSWORD: tunemymusic
+      POSTGRES_DB: tunemymusic_test
+    ports:
+      - "5434:5432"
+    # tmpfs makes the test DB volatile and ~10x faster — exactly right for
+    # CI where teardown happens at the end anyway.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tunemymusic -d tunemymusic_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    # save '' disables RDB snapshotting; tests don't need persistence.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10

@@ -241,14 +241,27 @@ export default function TransferDetailPage() {
           )}
         </div>
 
-        {/* Progress bar */}
+        {/* Progress bar — exposed as a real ARIA progressbar with live
+            updates so screen readers narrate the percent change as the
+            transfer runs. aria-busy on the parent disables animation
+            announcement loops. */}
         {(isRunning || transfer.status === 'COMPLETED') && (
-          <div className="mb-4">
+          <div
+            className="mb-4"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-busy={isRunning ? 'true' : 'false'}
+            aria-label={`Transfer progress: ${pct}% complete`}
+          >
             <div className="flex justify-between text-sm mb-2">
-              <span className="text-text-secondary">
+              <span className="text-text-secondary" aria-live="polite">
                 {progress?.processedTracks ?? 0} / {progress?.totalTracks ?? transfer.totalTracks} tracks
               </span>
-              <span className="font-mono text-accent">{pct}%</span>
+              <span className="font-mono text-accent" aria-hidden="true">
+                {pct}%
+              </span>
             </div>
             <Progress value={pct} />
           </div>

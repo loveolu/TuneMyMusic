@@ -142,18 +142,29 @@ export default function PlaylistsPage() {
 
           {/* Grid */}
           {loadingPlaylists ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-              {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="aspect-square rounded-2xl" />)}
+            <div
+              role="status"
+              aria-busy="true"
+              aria-live="polite"
+              aria-label="Loading playlists"
+              className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4"
+            >
+              {Array.from({ length: 10 }).map((_, i) => (
+                <Skeleton key={i} className="aspect-square rounded-2xl" aria-hidden="true" />
+              ))}
+              <span className="sr-only">Loading your playlists from the selected platform.</span>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="text-center py-16">
-              <ListMusic className="h-12 w-12 text-text-secondary mx-auto mb-4" />
+            <div role="status" aria-live="polite" className="text-center py-16">
+              <ListMusic className="h-12 w-12 text-text-secondary mx-auto mb-4" aria-hidden="true" />
               <p className="text-text-secondary">
                 {search ? `No playlists matching "${search}"` : 'No playlists found on this platform'}
               </p>
             </div>
           ) : (
             <motion.div
+              role="list"
+              aria-label={`${filtered.length} playlist${filtered.length === 1 ? '' : 's'}`}
               className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4"
               initial="hidden"
               animate="show"
@@ -163,6 +174,7 @@ export default function PlaylistsPage() {
                 {filtered.map((pl) => (
                   <motion.div
                     key={pl.id}
+                    role="listitem"
                     variants={{ hidden: { opacity: 0, scale: 0.95 }, show: { opacity: 1, scale: 1 } }}
                   >
                     <PlaylistCard playlist={pl} platform={activePlatform!} />

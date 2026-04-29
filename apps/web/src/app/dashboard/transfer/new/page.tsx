@@ -21,34 +21,47 @@ const steps = ['Source', 'Destination', 'Review'];
 
 function StepIndicator({ current }: { current: number }) {
   return (
-    <div className="flex items-center gap-2 mb-8">
+    <ol
+      className="flex items-center gap-2 mb-8"
+      aria-label="Transfer wizard progress"
+    >
       {steps.map((label, i) => {
         const done = i < current;
         const active = i === current;
         return (
-          <div key={label} className="flex items-center">
-            <div className={cn(
-              'flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all',
-              active && 'bg-accent text-base',
-              done && 'bg-success/10 text-success',
-              !active && !done && 'text-text-secondary',
-            )}>
-              <div className={cn(
-                'h-5 w-5 rounded-full flex items-center justify-center text-xs font-bold',
-                active && 'bg-base/30',
-                done && 'bg-success/20',
-              )}>
+          <li key={label} className="flex items-center">
+            <div
+              aria-current={active ? 'step' : undefined}
+              aria-label={`Step ${i + 1} of ${steps.length}: ${label}${done ? ' (completed)' : active ? ' (current)' : ''}`}
+              className={cn(
+                'flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all',
+                active && 'bg-accent text-base',
+                done && 'bg-success/10 text-success',
+                !active && !done && 'text-text-secondary',
+              )}
+            >
+              <div
+                aria-hidden="true"
+                className={cn(
+                  'h-5 w-5 rounded-full flex items-center justify-center text-xs font-bold',
+                  active && 'bg-base/30',
+                  done && 'bg-success/20',
+                )}
+              >
                 {done ? <Check className="h-3 w-3" /> : i + 1}
               </div>
               {label}
             </div>
             {i < steps.length - 1 && (
-              <div className={cn('h-px w-8 mx-1 transition-colors', done ? 'bg-success/40' : 'bg-border')} />
+              <div
+                aria-hidden="true"
+                className={cn('h-px w-8 mx-1 transition-colors', done ? 'bg-success/40' : 'bg-border')}
+              />
             )}
-          </div>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
@@ -65,9 +78,13 @@ function PlatformSelector({
   exclude?: string;
   label: string;
 }) {
+  // Use radiogroup semantics: only one platform can be selected at a time
+  // and screen readers will announce 'X of N' as the user arrows through.
   return (
-    <div>
-      <p className="text-sm font-medium text-text-secondary mb-3">{label}</p>
+    <div role="radiogroup" aria-label={label}>
+      <p className="text-sm font-medium text-text-secondary mb-3" id={`${label}-label`}>
+        {label}
+      </p>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {connections
           .filter((c) => c.platform !== exclude)
@@ -77,15 +94,23 @@ function PlatformSelector({
             return (
               <button
                 key={c.platform}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={`${cfg?.name ?? c.platform}${selected ? ' (selected)' : ''}`}
                 onClick={() => onChange(c.platform)}
                 className={cn(
                   'p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all duration-200',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                   selected ? 'border-accent bg-accent/5' : 'border-border bg-surface hover:border-border/80',
                 )}
                 style={selected ? { boxShadow: `0 0 20px ${cfg?.color ?? '#E8FF47'}20` } : {}}
               >
-                {selected && <Check className="absolute top-2 right-2 h-4 w-4 text-accent" />}
+                {selected && (
+                  <Check className="absolute top-2 right-2 h-4 w-4 text-accent" aria-hidden="true" />
+                )}
                 <div
+                  aria-hidden="true"
                   className="h-12 w-12 rounded-xl flex items-center justify-center text-2xl"
                   style={{ backgroundColor: `${cfg?.color ?? '#888'}22`, border: `1px solid ${cfg?.color ?? '#888'}44` }}
                 >

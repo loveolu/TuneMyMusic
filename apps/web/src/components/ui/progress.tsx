@@ -12,7 +12,13 @@ interface ProgressProps {
 export function Progress({ value, className, showLabel, color = '#E8FF47' }: ProgressProps) {
   const clamped = Math.min(100, Math.max(0, value));
   return (
-    <div className={cn('relative h-2 w-full rounded-full bg-elevated overflow-hidden', className)}>
+    // Decorative track — the parent <div role='progressbar'> with aria-valuenow
+    // is what AT reads. We mark this aria-hidden so the percentage isn't
+    // double-announced.
+    <div
+      aria-hidden="true"
+      className={cn('relative h-2 w-full rounded-full bg-elevated overflow-hidden', className)}
+    >
       <motion.div
         className="h-full rounded-full"
         style={{ backgroundColor: color }}

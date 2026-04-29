@@ -279,13 +279,12 @@ export function analyzePlaylist(tracks: Track[]): PlaylistAnalysis {
     'Unknown (genre metadata unavailable)': totalTracks,
   };
 
-  // Generate description (stub – would use OpenAI in production)
+  // Generate description (stub — replace with a real generator when needed)
   const topDecade = Object.entries(decadeDistribution).sort(([, a], [, b]) => b - a)[0]?.[0] ?? 'Unknown';
   const avgMinutes = Math.round(avgDurationMs / 60000);
   const description =
     `This playlist contains ${totalTracks} tracks with an average duration of ~${avgMinutes} minutes. ` +
-    `Most tracks are from the ${topDecade}. ` +
-    `(AI-generated description — powered by TuneMyMusic)`;
+    `Most tracks are from the ${topDecade}.`;
 
   return {
     totalTracks,
